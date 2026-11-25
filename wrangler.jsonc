@@ -1,0 +1,16 @@
+{
+  // Имя должно совпадать с названием твоего проекта (Worker) в Cloudflare
+  "name": "oasis-infinite",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "oasis-db",
+      "database_id": "ВСТАВЬ-СЮДА-ID-БАЗЫ"
+    }
+  ]
+}
