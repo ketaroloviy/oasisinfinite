@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Oasis Infinite</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      margin: 0; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, sans-serif; text-align: center;
+      background: var(--tg-theme-bg-color, #f5e6c8);
+      color: var(--tg-theme-text-color, #3b2f1e);
+    }
+    h1 { margin: 0 0 8px; }
+    #stats { opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>Oasis Infinite</h1>
+    <p id="hello">Загрузка...</p>
+    <p id="stats"></p>
+  </div>
+  <script>
+    (async () => {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      const hello = document.getElementById('hello');
+      const stats = document.getElementById('stats');
+
+      if (!tg || !tg.initData) {
+        hello.textContent = 'Открой игру через Telegram';
+        return;
+      }
+      tg.ready();
+      tg.expand();
+
+      try {
+        const res = await fetch('/api/state', {
+          headers: { Authorization: 'tma ' + tg.initData },
+        });
+        if (!res.ok) throw new Error('Ошибка сервера: ' + res.status);
+        const data = await res.json();
+        const p = data.player;
+        hello.textContent =
+          (data.isNew ? 'Добро пожаловать, ' : 'С возвращением, ') + (p.first_name || 'игрок') + '!';
+        stats.textContent =
+          'Уровень ' + p.level + ' · золото ' + p.gold +
+          ' · Аксумм ' + p.aksum + ' · самородки ' + p.nuggets;
+      } catch (e) {
+        hello.textContent = 'Не удалось связаться с сервером';
+        stats.textContent = String(e.message || e);
+      }
+    })();
+  </script>
+</body>
+</html>

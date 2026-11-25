@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS players (
+  telegram_id INTEGER PRIMARY KEY,
+  username TEXT,
+  first_name TEXT,
+  level INTEGER NOT NULL DEFAULT 1,
+  xp REAL NOT NULL DEFAULT 0,
+  gold REAL NOT NULL DEFAULT 0,
+  aksum REAL NOT NULL DEFAULT 0,
+  nuggets INTEGER NOT NULL DEFAULT 0,
+  smelter_unlocked INTEGER NOT NULL DEFAULT 0,
+  last_sync_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  telegram_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  payload TEXT,
+  created_at INTEGER NOT NULL
+);
