@@ -1,4 +1,4 @@
-import { verifyInitData } from './auth.js';
+import { checkInitData } from './auth.js';
 import { levelInfo, applyClicks, refillQueue } from '../public/core.js';
 import balance from '../config/balance.json';
 
@@ -24,7 +24,17 @@ function randInt(min, max) {
 async function authUser(request, env) {
   const header = request.headers.get('Authorization') || '';
   const initData = header.startsWith('tma ') ? header.slice(4) : '';
-  return verifyInitData(initData, env.BOT_TOKEN);
+  return checkInitData(initData, env.BOT_TOKEN);
+}
+
+// Ответ 401 с подсказкой, что именно не так (токен, подпись и т.д.).
+function unauthorized(env, reason) {
+  return json({
+    error: 'unauthorized',
+    reason,
+    hasToken: !!env.BOT_TOKEN,
+    tokenLooksOk: /^\d+:[A-Za-z0-9_-]{30,}$/.test(env.BOT_TOKEN || ''),
+  }, 401);
 }
 
 // Бонусы игрока. Пока их нет, позже сюда добавятся таланты.
@@ -104,8 +114,9 @@ async function save(env, p, s, tokens, tokensAt) {
 
 // GET /api/state
 async function handleState(request, env) {
-  const user = await authUser(request, env);
-  if (!user) return json({ error: 'unauthorized' }, 401);
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+  const user = auth.user;
 
   const nowMs = Date.now();
   const { p, isNew } = await loadPlayer(env, user, nowMs);
@@ -126,8 +137,9 @@ async function handleState(request, env) {
 
 // POST /api/click  { clicks: N }
 async function handleClick(request, env) {
-  const user = await authUser(request, env);
-  if (!user) return json({ error: 'unauthorized' }, 401);
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+  const user = auth.user;
 
   let body = null;
   try {

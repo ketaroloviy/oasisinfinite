@@ -17,12 +17,14 @@ function toHex(bytes) {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function verifyInitData(initData, botToken, maxAgeSeconds = 86400) {
-  if (!initData || !botToken) return null;
+// Возвращает { user } при успехе или { reason } с причиной отказа.
+export async function checkInitData(initData, botToken, maxAgeSeconds = 86400) {
+  if (!botToken) return { reason: 'no_bot_token' };
+  if (!initData) return { reason: 'no_init_data' };
 
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
-  if (!hash) return null;
+  if (!hash) return { reason: 'no_hash' };
   params.delete('hash');
 
   const dataCheckString = [...params.entries()]
@@ -32,15 +34,20 @@ export async function verifyInitData(initData, botToken, maxAgeSeconds = 86400) 
 
   const secretKey = await hmac(enc.encode('WebAppData'), botToken);
   const computed = toHex(await hmac(secretKey, dataCheckString));
-  if (computed !== hash) return null;
+  if (computed !== hash) return { reason: 'bad_signature' };
 
   const authDate = Number(params.get('auth_date'));
-  if (!authDate || Date.now() / 1000 - authDate > maxAgeSeconds) return null;
+  if (!authDate || Date.now() / 1000 - authDate > maxAgeSeconds) return { reason: 'expired' };
 
   try {
     const user = JSON.parse(params.get('user'));
-    return user && user.id ? user : null;
+    return user && user.id ? { user } : { reason: 'no_user' };
   } catch {
-    return null;
+    return { reason: 'no_user' };
   }
+}
+
+export async function verifyInitData(initData, botToken, maxAgeSeconds = 86400) {
+  const r = await checkInitData(initData, botToken, maxAgeSeconds);
+  return r.user || null;
 }

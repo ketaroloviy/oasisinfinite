@@ -187,7 +187,14 @@
     async function init() {
       try {
         const res = await fetch('/api/state', { headers: headers() });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
+        if (!res.ok) {
+          let extra = '';
+          try {
+            const j = await res.json();
+            extra = ' ' + JSON.stringify({ reason: j.reason, hasToken: j.hasToken, tokenLooksOk: j.tokenLooksOk });
+          } catch (e) { /* ответ не JSON */ }
+          throw new Error('HTTP ' + res.status + extra);
+        }
         const data = await res.json();
         S = data.player;
         mine = data.mine;
