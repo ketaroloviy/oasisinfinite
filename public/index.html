@@ -2,57 +2,214 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <title>Oasis Infinite</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
+    :root { --gold: #d9a21b; --diamond: #43d1ee; --card: rgba(127, 127, 127, 0.16); }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
     body {
-      margin: 0; min-height: 100vh;
-      display: flex; align-items: center; justify-content: center;
-      font-family: system-ui, sans-serif; text-align: center;
+      margin: 0; overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--tg-theme-bg-color, #f5e6c8);
       color: var(--tg-theme-text-color, #3b2f1e);
+      -webkit-user-select: none; user-select: none;
     }
-    h1 { margin: 0 0 8px; }
-    #stats { opacity: 0.8; }
+    .app {
+      height: 100%; display: flex; flex-direction: column;
+      padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+      padding-top: calc(12px + env(safe-area-inset-top, 0px));
+    }
+    .top { display: flex; align-items: center; gap: 10px; }
+    .lvl { font-weight: 700; min-width: 64px; }
+    .bar { flex: 1; height: 10px; border-radius: 6px; background: var(--card); overflow: hidden; }
+    .bar > div { height: 100%; width: 0%; background: var(--gold); transition: width .2s; }
+    .xp { font-size: 12px; opacity: .7; min-width: 64px; text-align: right; }
+    .res { display: flex; gap: 10px; margin-top: 12px; }
+    .chip { flex: 1; background: var(--card); border-radius: 14px; padding: 10px 12px; }
+    .chip small { display: block; opacity: .7; font-size: 12px; }
+    .chip b { font-size: 22px; }
+    .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
+    .vname { font-size: 18px; font-weight: 600; min-height: 24px; }
+    .rock {
+      --s: 160px; width: var(--s); height: var(--s); border-radius: 46% 54% 50% 50% / 55% 48% 52% 45%;
+      border: 0; padding: 0; cursor: pointer; touch-action: manipulation;
+      box-shadow: inset -10px -14px 24px rgba(0,0,0,.28), 0 10px 22px rgba(0,0,0,.25);
+      transition: transform .06s;
+    }
+    .rock:active { transform: scale(.93); }
+    .v0 { --s: 150px; background: radial-gradient(circle at 35% 30%, #b9a58f, #7d6a57); }
+    .v1 { --s: 165px; background: radial-gradient(circle at 35% 30%, #d2b98a, #8f7347); }
+    .v2 { --s: 180px; background: radial-gradient(circle at 35% 30%, #f0d36a, #a8801a); }
+    .v3 { --s: 195px; background: radial-gradient(circle at 35% 30%, #ffe27a, #c78b00); }
+    .v4 { --s: 175px; background: radial-gradient(circle at 35% 30%, #d9fbff, #25a9c9);
+          box-shadow: inset -10px -14px 24px rgba(0,0,0,.25), 0 0 34px rgba(67,209,238,.65); }
+    .pips { display: flex; gap: 8px; }
+    .pip { width: 16px; height: 16px; border-radius: 50%; background: var(--card); transition: background .1s; }
+    .pip.on { background: var(--gold); }
+    #status { min-height: 18px; text-align: center; font-size: 13px; opacity: .75; }
+    .float {
+      position: fixed; pointer-events: none; font-weight: 700; font-size: 22px;
+      color: var(--gold); text-shadow: 0 1px 2px rgba(0,0,0,.35);
+      animation: up .7s ease-out forwards; transform: translate(-50%, -50%);
+    }
+    .float.dia { color: var(--diamond); }
+    @keyframes up { to { transform: translate(-50%, -120px); opacity: 0; } }
   </style>
 </head>
 <body>
-  <div>
-    <h1>Oasis Infinite</h1>
-    <p id="hello">Загрузка...</p>
-    <p id="stats"></p>
+  <div class="app">
+    <div class="top">
+      <div class="lvl" id="level">Ур. 1</div>
+      <div class="bar"><div id="xpbar"></div></div>
+      <div class="xp" id="xptext">0 / 25</div>
+    </div>
+    <div class="res">
+      <div class="chip"><small>Золото</small><b id="gold">0</b></div>
+      <div class="chip"><small>Самородки</small><b id="nuggets">0</b></div>
+    </div>
+    <div class="stage">
+      <div class="vname" id="vname"></div>
+      <button class="rock v0" id="rock" aria-label="Жила"></button>
+      <div class="pips" id="pips"></div>
+    </div>
+    <div id="status">Загрузка...</div>
   </div>
-  <script>
-    (async () => {
-      const tg = window.Telegram && window.Telegram.WebApp;
-      const hello = document.getElementById('hello');
-      const stats = document.getElementById('stats');
 
-      if (!tg || !tg.initData) {
-        hello.textContent = 'Открой игру через Telegram';
-        return;
+  <script type="module">
+    import { levelInfo, applyClicks } from './core.js';
+
+    const tg = window.Telegram && window.Telegram.WebApp;
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+
+    if (!tg || !tg.initData) {
+      statusEl.textContent = 'Открой игру через Telegram';
+      throw new Error('no telegram');
+    }
+    tg.ready();
+    tg.expand();
+
+    let S = null;        // последнее подтверждённое сервером состояние
+    let mine = null;     // настройки рудника с сервера
+    let mods = null;     // бонусы игрока с сервера
+    let unsent = 0;      // клики, ещё не отправленные
+    let inflight = 0;    // клики, отправленные и ждущие ответа
+    let lastTap = 0;
+
+    const headers = () => ({ Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' });
+
+    function fmt(n) {
+      if (n >= 1000) return Math.floor(n).toLocaleString('ru-RU');
+      return (Math.round(n * 10) / 10).toString().replace('.', ',');
+    }
+
+    // Что показываем: подтверждённое состояние плюс клики, которые сервер ещё не подтвердил.
+    function display() {
+      const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits };
+      const pending = inflight + unsent;
+      if (pending) applyClicks(d, pending, mine, mods, () => 0);
+      return d;
+    }
+
+    function render() {
+      const d = display();
+      const li = levelInfo(d.xp);
+      $('level').textContent = 'Ур. ' + li.level;
+      $('xpbar').style.width = Math.min(100, (li.into / li.need) * 100) + '%';
+      $('xptext').textContent = Math.floor(li.into) + ' / ' + li.need;
+      $('gold').textContent = fmt(d.gold);
+      $('nuggets').textContent = d.nuggets;
+
+      const vein = mine.veins[d.queue[0]];
+      if (vein) {
+        $('rock').className = 'rock v' + vein.id;
+        $('vname').textContent = vein.name + ' жила';
       }
-      tg.ready();
-      tg.expand();
+      const pips = $('pips').children;
+      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < d.hits);
+    }
 
+    function floatText(x, y, text, dia) {
+      const el = document.createElement('div');
+      el.className = 'float' + (dia ? ' dia' : '');
+      el.textContent = text;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 750);
+    }
+
+    function onTap(e) {
+      const now = performance.now();
+      if (!S || now - lastTap < 100) return; // не чаще 10 раз в секунду
+      lastTap = now;
+
+      const d = display();
+      if (!d.queue.length) return;
+      const vein = mine.veins[d.queue[0]];
+
+      unsent += 1;
+      if (vein.mult > 0) floatText(e.clientX, e.clientY - 30, '+' + fmt(mods.clickGold * vein.mult), false);
+      else floatText(e.clientX, e.clientY - 30, '◆', true);
+      if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+
+      render();
+      if (unsent >= 20) flush();
+    }
+
+    async function flush(keepalive) {
+      if (inflight || !unsent || !S) return;
+      inflight = unsent;
+      unsent = 0;
       try {
-        const res = await fetch('/api/state', {
-          headers: { Authorization: 'tma ' + tg.initData },
+        const res = await fetch('/api/click', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ clicks: inflight }),
+          keepalive: !!keepalive,
         });
-        if (!res.ok) throw new Error('Ошибка сервера: ' + res.status);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        const p = data.player;
-        hello.textContent =
-          (data.isNew ? 'Добро пожаловать, ' : 'С возвращением, ') + (p.first_name || 'игрок') + '!';
-        stats.textContent =
-          'Уровень ' + p.level + ' · золото ' + p.gold +
-          ' · Аксумм ' + p.aksum + ' · самородки ' + p.nuggets;
-      } catch (e) {
-        hello.textContent = 'Не удалось связаться с сервером';
-        stats.textContent = String(e.message || e);
+        S = data.player;
+        mods = data.mods;
+        inflight = 0;
+        statusEl.textContent = '';
+      } catch (err) {
+        unsent += inflight;
+        inflight = 0;
+        statusEl.textContent = 'Нет связи, пробую снова...';
       }
-    })();
+      render();
+    }
+
+    async function init() {
+      try {
+        const res = await fetch('/api/state', { headers: headers() });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        S = data.player;
+        mine = data.mine;
+        mods = data.mods;
+
+        const pips = $('pips');
+        for (let i = 0; i < mine.clicksPerVein; i++) {
+          const p = document.createElement('div');
+          p.className = 'pip';
+          pips.appendChild(p);
+        }
+        statusEl.textContent = '';
+        render();
+        $('rock').addEventListener('pointerdown', onTap);
+        $('rock').addEventListener('contextmenu', (e) => e.preventDefault());
+        setInterval(() => flush(false), 1000);
+        document.addEventListener('visibilitychange', () => { if (document.hidden) flush(true); });
+      } catch (err) {
+        statusEl.textContent = 'Не удалось связаться с сервером: ' + (err.message || err);
+      }
+    }
+    init();
   </script>
 </body>
 </html>
