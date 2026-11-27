@@ -1,9 +1,10 @@
 import { checkInitData } from './auth.js';
-import { levelInfo, applyClicks, refillQueue, minersCost } from '../public/core.js';
+import { levelInfo, applyClicks, refillQueue, minersCost, workersCost, rollWeighted } from '../public/core.js';
 import { computeMods, NODE_BY_ID, checkBuy } from '../public/talents.js';
 import balance from '../config/balance.json';
 
 const mine = balance.mine;
+const smelter = balance.smelter;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -40,7 +41,14 @@ function unauthorized(env, reason) {
 
 // Бонусы игрока по купленным талантам (без временной лихорадки).
 function getMods(talents) {
-  return computeMods(talents, mine);
+  return {
+    ...computeMods(talents, mine),
+    // Плавильня: сюда на этапе 7 добавятся таланты плавильни.
+    smithAksum: smelter.smithBaseRate,
+    coinMult: 1,
+    coolSeconds: smelter.coolSeconds,
+    lockSeconds: smelter.lockSeconds,
+  };
 }
 
 // Бонусы с учётом алмазной лихорадки, если она сейчас идёт.
@@ -54,6 +62,11 @@ function publicMine() {
           minerBaseRate, offlineCapSeconds, feverSeconds, feverMult } = mine;
   return { clicksPerVein, xpPerClick, veins, minerBaseCost, minerGrowth, minerMax,
            minerBaseRate, offlineCapSeconds, feverSeconds, feverMult };
+}
+
+function publicSmelter() {
+  const { xpPerCoin, smithBaseCost, smithGrowth, smithMax, smithBaseRate, coins } = smelter;
+  return { xpPerCoin, smithBaseCost, smithGrowth, smithMax, smithBaseRate, coins };
 }
 
 function logEvent(env, userId, type, payload, nowMs) {
@@ -111,6 +124,9 @@ function toState(p) {
     queue, hits: p.vein_hits,
     miners: p.miners, idleAt: p.idle_at,
     talents: parseJsonArray(p.talents), feverUntil: p.fever_until, smelter: p.smelter_unlocked,
+    aksum: p.aksum, smiths: p.smiths,
+    smStage: p.smelter_stage, smCoin: p.smelter_coin,
+    smReadyAt: p.smelter_ready_at, smLockUntil: p.smelter_lock_until,
   };
 }
 
@@ -120,7 +136,9 @@ function view(p, s) {
     gold: s.gold,
     xp: s.xp,
     nuggets: s.nuggets,
-    aksum: p.aksum,
+    aksum: s.aksum,
+    smiths: s.smiths,
+    smelter: { stage: s.smStage, coin: s.smCoin, readyAt: s.smReadyAt, lockUntil: s.smLockUntil },
     queue: s.queue,
     hits: s.hits,
     miners: s.miners,
@@ -138,6 +156,8 @@ async function save(env, p, s, tokens, tokensAt, nowMs) {
        vein_queue = ?, vein_hits = ?,
        miners = ?, idle_at = ?,
        talents = ?, fever_until = ?, smelter_unlocked = ?,
+       aksum = ?, smiths = ?,
+       smelter_stage = ?, smelter_coin = ?, smelter_ready_at = ?, smelter_lock_until = ?,
        click_tokens = ?, click_tokens_at = ?,
        last_sync_at = ?, version = version + 1
      WHERE telegram_id = ? AND version = ?`
@@ -146,6 +166,8 @@ async function save(env, p, s, tokens, tokensAt, nowMs) {
           JSON.stringify(s.queue), s.hits,
           s.miners, s.idleAt,
           JSON.stringify(s.talents), s.feverUntil, s.smelter,
+          s.aksum, s.smiths,
+          s.smStage, s.smCoin, s.smReadyAt, s.smLockUntil,
           tokens, tokensAt,
           Math.floor(nowMs / 1000), p.telegram_id, p.version)
     .run();
@@ -162,9 +184,11 @@ function settleIdle(s, base, nowMs) {
     feverSec = Math.min(credited, Math.max(0, Math.min(nowMs, s.feverUntil) - s.idleAt) / 1000);
   }
   const gold = s.miners * base.minerGold * (credited + feverSec * (mine.feverMult - 1));
+  const aksum = s.smiths * base.smithAksum * credited;
   s.gold += gold;
+  s.aksum += aksum;
   s.idleAt = nowMs;
-  return { seconds: raw, credited, gold, capped: raw > mine.offlineCapSeconds };
+  return { seconds: raw, credited, gold, aksum, capped: raw > mine.offlineCapSeconds };
 }
 
 // Общий каркас для всех действий: читает игрока, начисляет доход шахтёров,
@@ -200,7 +224,7 @@ async function mutate(env, user, fn) {
 async function handleState(request, env) {
   const auth = await authUser(request, env);
   if (!auth.user) return unauthorized(env, auth.reason);
-  return mutate(env, auth.user, () => ({ body: { mine: publicMine() } }));
+  return mutate(env, auth.user, () => ({ body: { mine: publicMine(), smelter: publicSmelter() } }));
 }
 
 // POST /api/click  { clicks: N }
@@ -287,6 +311,96 @@ async function handleTalent(request, env) {
   });
 }
 
+// POST /api/smelter  { action: "cast" | "cool" | "polish" }
+async function handleSmelter(request, env) {
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  const action = body && body.action;
+  if (!['cast', 'cool', 'polish'].includes(action)) return json({ error: 'bad_request' }, 400);
+
+  return mutate(env, auth.user, ({ s, base, nowMs }) => {
+    if (!s.smelter) return { fail: { error: 'locked_feature', status: 403 } };
+    if (s.smLockUntil > nowMs) return { fail: { error: 'locked', status: 409 } };
+
+    // Нарушение порядка: монета пропадает, плавильня встаёт на lockSeconds.
+    const violation = () => {
+      s.smStage = 0;
+      s.smCoin = -1;
+      s.smReadyAt = 0;
+      s.smLockUntil = nowMs + base.lockSeconds * 1000;
+      return { body: { violation: true, action } };
+    };
+
+    if (action === 'cast') {
+      if (s.smStage !== 0) return violation();
+      s.smCoin = rollWeighted(smelter.coins, rand);
+      s.smStage = 1;
+      return { body: { done: 'cast' } };
+    }
+
+    if (action === 'cool') {
+      if (s.smStage !== 1) return violation();
+      s.smStage = 2;
+      s.smReadyAt = nowMs + base.coolSeconds * 1000;
+      return { body: { done: 'cool' } };
+    }
+
+    // polish
+    if (s.smStage !== 2 || nowMs < s.smReadyAt) return violation();
+    const coin = smelter.coins[s.smCoin];
+    const reward = { coin: coin.id, aksum: 0, nuggets: 0, xp: smelter.xpPerCoin * base.xpMult };
+    const events = [];
+    if (coin.nuggets) {
+      const n = randInt(coin.nuggets[0], coin.nuggets[1]);
+      reward.nuggets = rand() < base.doubleNugget ? n * 2 : n;
+      s.nuggets += reward.nuggets;
+      events.push(['nuggets_found', { amount: reward.nuggets, source: 'smelter' }]);
+    } else {
+      reward.aksum = coin.nominal * coin.mult * base.coinMult;
+      s.aksum += reward.aksum;
+    }
+    s.xp += reward.xp;
+    s.smStage = 0;
+    s.smCoin = -1;
+    s.smReadyAt = 0;
+    return { body: { done: 'polish', reward }, events };
+  });
+}
+
+// POST /api/smith  { count: N }
+async function handleSmith(request, env) {
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  const count = Math.floor(Number(body && body.count));
+  if (!Number.isFinite(count) || count < 1 || count > smelter.smithMax) {
+    return json({ error: 'bad_request' }, 400);
+  }
+
+  return mutate(env, auth.user, ({ s }) => {
+    if (!s.smelter) return { fail: { error: 'locked_feature', status: 403 } };
+    if (s.smiths + count > smelter.smithMax) return { fail: { error: 'limit', status: 409 } };
+    const cost = workersCost(smelter.smithBaseCost, smelter.smithGrowth, s.smiths, count);
+    if (s.aksum < cost) return { fail: { error: 'not_enough_aksum', status: 409 } };
+    s.aksum -= cost;
+    s.smiths += count;
+    return { body: { hired: count, cost }, events: [['smiths_hired', { count, cost }]] };
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -294,6 +408,8 @@ export default {
     if (url.pathname === '/api/click' && request.method === 'POST') return handleClick(request, env);
     if (url.pathname === '/api/hire' && request.method === 'POST') return handleHire(request, env);
     if (url.pathname === '/api/talent' && request.method === 'POST') return handleTalent(request, env);
+    if (url.pathname === '/api/smelter' && request.method === 'POST') return handleSmelter(request, env);
+    if (url.pathname === '/api/smith' && request.method === 'POST') return handleSmith(request, env);
     return json({ error: 'not_found' }, 404);
   },
 };

@@ -92,6 +92,26 @@
     .ninfo .why { display: block; font-size: 12px; opacity: .75; }
     .btn.small { flex: none; min-width: 96px; padding: 9px 10px; font-size: 13px; }
     .btn.dia { background: var(--diamond); color: #04323d; }
+    .coin {
+      --s: 140px; width: var(--s); height: var(--s); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 40px; font-weight: 800; color: #2d3440;
+      box-shadow: inset -8px -10px 18px rgba(0,0,0,.25), 0 8px 18px rgba(0,0,0,.25);
+    }
+    .coin.empty { background: transparent; border: 3px dashed rgba(127,127,127,.5); box-shadow: none; }
+    .c0 { --s: 110px; background: radial-gradient(circle at 35% 30%, #f4f6f8, #a2abb5); }
+    .c1 { --s: 124px; background: radial-gradient(circle at 35% 30%, #f4f6f8, #98a2ad); }
+    .c2 { --s: 138px; background: radial-gradient(circle at 35% 30%, #ffffff, #8e99a6); }
+    .c3 { --s: 152px; background: radial-gradient(circle at 35% 30%, #ffffff, #7f8d9c); }
+    .c4 { --s: 140px; background: radial-gradient(circle at 35% 30%, #d9fbff, #25a9c9); color: #04323d;
+          box-shadow: inset -8px -10px 18px rgba(0,0,0,.2), 0 0 30px rgba(67,209,238,.65); }
+    .cool { width: 70%; height: 10px; border-radius: 6px; background: var(--card); overflow: hidden; }
+    #coolBar { height: 100%; width: 0; background: #5bbcff; transition: width .25s linear; }
+    #smBanner { min-height: 22px; font-weight: 700; color: #d9534f; }
+    #smHint { min-height: 20px; opacity: .85; text-align: center; }
+    .lockedBox { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; line-height: 1.5; opacity: .8; }
+    .lockedBox[hidden] { display: none; }
+    .chip[hidden] { display: none; }
     .modal {
       position: fixed; inset: 0; background: rgba(0,0,0,.55);
       display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -115,6 +135,7 @@
     </div>
     <div class="res">
       <div class="chip"><small>Золото <span class="gps" id="gps"></span></small><b id="gold">0</b></div>
+      <div class="chip" id="aksumChip" hidden><small>Аксумм <span class="gps" id="aps"></span></small><b id="aksum">0</b></div>
       <div class="chip"><small>Самородки</small><b id="nuggets">0</b></div>
     </div>
     <div class="view" id="viewMine">
@@ -133,12 +154,36 @@
         </div>
       </div>
     </div>
+    <div class="view" id="viewSmelter" hidden>
+      <div class="lockedBox" id="smLocked">Плавильня закрыта.<br>Купи талант «Ключ от плавильни» в древе рудника.</div>
+      <div class="view" id="smMain" hidden>
+        <div class="stage">
+          <div id="smBanner"></div>
+          <div class="coin empty" id="coin"><span id="coinText"></span></div>
+          <div class="cool"><div id="coolBar"></div></div>
+          <div id="smHint"></div>
+        </div>
+        <div class="row" style="margin-bottom: 8px">
+          <button class="btn" id="btnCast">Отлить</button>
+          <button class="btn" id="btnCool">Остудить</button>
+          <button class="btn" id="btnPolish">Отполировать</button>
+        </div>
+        <div class="panel">
+          <div class="head"><span id="smithsTitle">Кузнецы</span><span id="smithsInfo"></span></div>
+          <div class="row">
+            <button class="btn" id="hireSmith1" disabled>Нанять</button>
+            <button class="btn" id="hireSmithMax" disabled>Нанять ещё</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="view" id="viewTree" hidden>
       <div id="treeList"></div>
     </div>
     <div id="status">Загрузка...</div>
     <div class="nav">
       <button class="tab on" id="tabMine">Рудник</button>
+      <button class="tab" id="tabSmelter">Плавильня</button>
       <button class="tab" id="tabTree">Древо</button>
     </div>
   </div>
@@ -152,7 +197,7 @@
   </div>
 
   <script type="module">
-    import { levelInfo, applyClicks, minerPrice, minersCost } from './core.js';
+    import { levelInfo, applyClicks, minerPrice, minersCost, workerPrice, workersCost } from './core.js';
     import { NODES, BRANCH_INFO, NODE_BY_ID, checkBuy } from './talents.js';
 
     const tg = window.Telegram && window.Telegram.WebApp;
@@ -173,6 +218,8 @@
     let unsent = 0;      // клики, ещё не отправленные
     let inflight = 0;    // клики, отправленные и ждущие ответа
     let lastTap = 0;
+    let smelterCfg = null; // настройки плавильни с сервера
+    let smBusy = false;
     let clockOffset = 0; // разница между часами сервера и телефона
     let view = 'mine';
     let treeBuilt = false;
@@ -221,6 +268,7 @@
       S = data.player;
       mods = data.mods;
       if (data.mine) mine = data.mine;
+      if (data.smelter) smelterCfg = data.smelter;
       syncAt = performance.now();
       if (data.serverTime) clockOffset = data.serverTime - Date.now();
       if (data.idle) maybeShowIdle(data.idle);
@@ -238,11 +286,14 @@
     }
 
     function maybeShowIdle(idle) {
-      if (idle.seconds < 60 || idle.gold <= 0 || !$('modal').hidden) return;
-      let text = 'Шахтёры работали ' + fmtDuration(idle.credited) + ' и принесли ' + fmt(idle.gold) + ' золота.';
+      if (idle.seconds < 60 || (!(idle.gold > 0) && !(idle.aksum > 0)) || !$('modal').hidden) return;
+      const parts = [];
+      if (idle.gold > 0) parts.push('шахтёры принесли ' + fmt(idle.gold) + ' золота');
+      if (idle.aksum > 0) parts.push('кузнецы выплавили ' + fmt(idle.aksum) + ' Аксуммов');
+      let text = 'Пока тебя не было ' + fmtDuration(idle.credited) + ': ' + parts.join(', ') + '.';
       if (idle.capped) {
         text += '<br><span class="note">Тебя не было дольше ' + fmtDuration(mine.offlineCapSeconds) +
-                ', больше шахтёры не накапливают.</span>';
+                ', больше доход не копится.</span>';
       }
       $('modalText').innerHTML = text;
       $('modal').hidden = false;
@@ -251,12 +302,14 @@
     // Что показываем: подтверждённое состояние, клики, ещё не подтверждённые сервером,
     // и золото, которое шахтёры принесли с момента последней синхронизации.
     function display() {
-      const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits, miners: S.miners };
+      const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits, miners: S.miners,
+                  aksum: S.aksum, smiths: S.smiths };
       const em = effMods();
       const pending = inflight + unsent;
       if (pending) applyClicks(d, pending, mine, em, () => 0);
       const sec = Math.min(120, (performance.now() - syncAt) / 1000);
       d.gold += S.miners * em.minerGold * sec;
+      d.aksum += S.smiths * mods.smithAksum * sec;
       return d;
     }
 
@@ -291,7 +344,7 @@
 
       const left = feverLeft();
       $('fever').textContent = left > 0 ? 'Алмазная лихорадка ×' + mine.feverMult + ' · ' + Math.ceil(left) + ' с' : '';
-      $('smelterNote').textContent = S.smelterUnlocked ? 'Плавильня открыта. Скоро её можно будет запустить.' : '';
+      $('smelterNote').textContent = S.smelterUnlocked ? 'Плавильня открыта: загляни во вкладку «Плавильня».' : '';
 
       // панель шахтёров
       $('minersTitle').textContent = 'Шахтёры: ' + d.miners + ' / ' + mine.minerMax;
@@ -304,7 +357,15 @@
       $('hireMax').textContent = c >= 2 ? 'Нанять ×' + c + ' · ' + fmt(minersCost(mine, d.miners, c)) : 'Нанять несколько';
       $('hireMax').disabled = c < 2;
 
+      const unlocked = !!S.smelterUnlocked;
+      $('aksumChip').hidden = !unlocked;
+      if (unlocked) {
+        $('aksum').textContent = fmt(d.aksum);
+        const aps = d.smiths * mods.smithAksum;
+        $('aps').textContent = aps > 0 ? '+' + fmt(aps) + '/с' : '';
+      }
       if (view === 'tree') updateTree(d);
+      else if (view === 'smelter') updateSmelter(d);
     }
 
 
@@ -408,11 +469,129 @@
     function showView(name) {
       view = name;
       $('viewMine').hidden = name !== 'mine';
+      $('viewSmelter').hidden = name !== 'smelter';
       $('viewTree').hidden = name !== 'tree';
       $('tabMine').classList.toggle('on', name === 'mine');
+      $('tabSmelter').classList.toggle('on', name === 'smelter');
       $('tabTree').classList.toggle('on', name === 'tree');
       if (name === 'tree' && !treeBuilt) buildTree();
       render();
+    }
+
+
+    function maxAffordableSmiths(d) {
+      const room = smelterCfg.smithMax - d.smiths;
+      let c = 0;
+      while (c < room && workersCost(smelterCfg.smithBaseCost, smelterCfg.smithGrowth, d.smiths, c + 1) <= d.aksum) c++;
+      return c;
+    }
+
+    function updateSmelter(d) {
+      const unlocked = !!S.smelterUnlocked;
+      $('smLocked').hidden = unlocked;
+      $('smMain').hidden = !unlocked;
+      if (!unlocked) return;
+
+      const sm = S.smelter;
+      const now = Date.now() + clockOffset;
+      const lockLeft = Math.max(0, (sm.lockUntil - now) / 1000);
+      const coin = sm.coin >= 0 ? smelterCfg.coins[sm.coin] : null;
+
+      const coinCls = 'coin ' + (coin ? 'c' + coin.id : 'empty');
+      if ($('coin').className !== coinCls) $('coin').className = coinCls;
+      setText($('coinText'), coin ? (coin.nuggets ? '◆' : String(coin.nominal)) : '');
+
+      let pct = 0;
+      let hint = 'Нажми «Отлить»';
+      if (sm.stage === 1) hint = 'Теперь «Остудить»';
+      if (sm.stage === 2) {
+        const total = mods.coolSeconds * 1000;
+        const leftMs = sm.readyAt - now;
+        pct = Math.max(0, Math.min(100, (1 - leftMs / total) * 100));
+        hint = leftMs <= 0 ? 'Готово: «Отполировать»' : 'Остывает...';
+      }
+      $('coolBar').style.width = pct + '%';
+      if (lockLeft > 0) {
+        setText($('smBanner'), 'Плавильня остановлена: ' + Math.ceil(lockLeft) + ' с');
+        hint = '';
+      } else {
+        setText($('smBanner'), '');
+      }
+      setText($('smHint'), hint);
+
+      const off = lockLeft > 0 || smBusy;
+      $('btnCast').disabled = off;
+      $('btnCool').disabled = off;
+      $('btnPolish').disabled = off;
+
+      // кузнецы
+      const full = d.smiths >= smelterCfg.smithMax;
+      const price = workerPrice(smelterCfg.smithBaseCost, smelterCfg.smithGrowth, d.smiths);
+      setText($('smithsTitle'), 'Кузнецы: ' + d.smiths + ' / ' + smelterCfg.smithMax);
+      const aps = d.smiths * mods.smithAksum;
+      setText($('smithsInfo'), aps > 0 ? fmt(aps) + ' Аксумма в секунду' : 'ещё никого нет');
+      setText($('hireSmith1'), full ? 'Максимум' : 'Нанять · ' + fmt(price));
+      $('hireSmith1').disabled = full || d.aksum < price;
+      const c = maxAffordableSmiths(d);
+      setText($('hireSmithMax'), c >= 2
+        ? 'Нанять ×' + c + ' · ' + fmt(workersCost(smelterCfg.smithBaseCost, smelterCfg.smithGrowth, d.smiths, c))
+        : 'Нанять несколько');
+      $('hireSmithMax').disabled = c < 2;
+    }
+
+    function showReward(reward) {
+      const r = $('coin').getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      if (reward.nuggets > 0) floatText(x, y, '+' + reward.nuggets + ' ◆', true);
+      else floatText(x, y, '+' + fmt(reward.aksum), false);
+    }
+
+    async function smeltAction(action) {
+      if (smBusy || !S) return;
+      smBusy = true;
+      render();
+      await flush();
+      await enqueue(async () => {
+        try {
+          const data = await api('/api/smelter', 'POST', { action });
+          applyServer(data);
+          if (data.violation) {
+            const secs = Math.round((S.smelter.lockUntil - (Date.now() + clockOffset)) / 1000);
+            statusEl.textContent = 'Нарушен порядок! Плавильня остановлена на ' + secs + ' с';
+            if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
+          } else {
+            statusEl.textContent = '';
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+            if (data.reward) showReward(data.reward);
+          }
+        } catch (err) {
+          const code = err.data && err.data.error;
+          statusEl.textContent =
+            code === 'locked' ? 'Плавильня остановлена, подожди' :
+            code === 'locked_feature' ? 'Плавильня ещё закрыта' : 'Нет связи, попробуй ещё раз';
+          await doSync();
+        }
+      });
+      smBusy = false;
+      render();
+    }
+
+    async function hireSmith(count) {
+      await flush();
+      await enqueue(async () => {
+        try {
+          applyServer(await api('/api/smith', 'POST', { count }));
+          statusEl.textContent = '';
+        } catch (err) {
+          const code = err.data && err.data.error;
+          statusEl.textContent =
+            code === 'not_enough_aksum' ? 'Не хватает Аксуммов' :
+            code === 'limit' ? 'Больше нанять нельзя' : 'Не удалось нанять';
+          await doSync();
+        }
+        render();
+      });
     }
 
     function floatText(x, y, text, dia) {
@@ -514,7 +693,16 @@
       });
       $('modalOk').addEventListener('click', () => { $('modal').hidden = true; });
       $('tabMine').addEventListener('click', () => showView('mine'));
+      $('tabSmelter').addEventListener('click', () => showView('smelter'));
       $('tabTree').addEventListener('click', () => showView('tree'));
+      $('btnCast').addEventListener('click', () => smeltAction('cast'));
+      $('btnCool').addEventListener('click', () => smeltAction('cool'));
+      $('btnPolish').addEventListener('click', () => smeltAction('polish'));
+      $('hireSmith1').addEventListener('click', () => hireSmith(1));
+      $('hireSmithMax').addEventListener('click', () => {
+        const c = maxAffordableSmiths(display());
+        if (c >= 2) hireSmith(c);
+      });
 
       setInterval(() => flush(false), 1000);
       setInterval(() => enqueue(doSync), 20000);

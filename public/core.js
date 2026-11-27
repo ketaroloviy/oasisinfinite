@@ -19,15 +19,20 @@ export function levelInfo(xp) {
   return { level, into: rest, need: xpToNext(level) };
 }
 
-// Выбор типа жилы по шансам из баланса.
-export function rollVein(mine, rand) {
-  const total = mine.veins.reduce((sum, v) => sum + v.chance, 0);
+// Выбор элемента из списка по весам chance.
+export function rollWeighted(list, rand) {
+  const total = list.reduce((sum, v) => sum + v.chance, 0);
   let r = rand() * total;
-  for (const v of mine.veins) {
+  for (const v of list) {
     if (r < v.chance) return v.id;
     r -= v.chance;
   }
-  return mine.veins[0].id;
+  return list[0].id;
+}
+
+// Выбор типа жилы по шансам из баланса.
+export function rollVein(mine, rand) {
+  return rollWeighted(mine.veins, rand);
 }
 
 // Дополняет очередь будущих жил до нужной длины.
@@ -76,5 +81,17 @@ export function minerPrice(mine, owned) {
 export function minersCost(mine, owned, count) {
   let total = 0;
   for (let i = 0; i < count; i++) total += minerPrice(mine, owned + i);
+  return total;
+}
+
+// Цена следующего рабочего (шахтёра или кузнеца).
+export function workerPrice(baseCost, growth, owned) {
+  return Math.round(baseCost * Math.pow(growth, owned));
+}
+
+// Суммарная цена найма count рабочих подряд, если уже нанято owned.
+export function workersCost(baseCost, growth, owned, count) {
+  let total = 0;
+  for (let i = 0; i < count; i++) total += workerPrice(baseCost, growth, owned + i);
   return total;
 }
