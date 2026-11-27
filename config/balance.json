@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "start": {
     "level": 1,
     "xp": 0,
@@ -55,6 +55,8 @@
     "minerGrowth": 1.15,
     "minerMax": 50,
     "minerBaseRate": 0.5,
-    "offlineCapSeconds": 14400
+    "offlineCapSeconds": 14400,
+    "feverSeconds": 60,
+    "feverMult": 2
   }
 }

@@ -1,5 +1,6 @@
 import { checkInitData } from './auth.js';
 import { levelInfo, applyClicks, refillQueue, minersCost } from '../public/core.js';
+import { computeMods, NODE_BY_ID, checkBuy } from '../public/talents.js';
 import balance from '../config/balance.json';
 
 const mine = balance.mine;
@@ -37,16 +38,22 @@ function unauthorized(env, reason) {
   }, 401);
 }
 
-// Бонусы игрока. Пока их нет, позже сюда добавятся таланты.
-function getMods() {
-  return { clickGold: mine.baseClickGold, xpMult: 1, minerGold: mine.minerBaseRate };
+// Бонусы игрока по купленным талантам (без временной лихорадки).
+function getMods(talents) {
+  return computeMods(talents, mine);
+}
+
+// Бонусы с учётом алмазной лихорадки, если она сейчас идёт.
+function effectiveMods(base, feverUntil, nowMs) {
+  if (!base.fever || feverUntil <= nowMs) return base;
+  return { ...base, clickGold: base.clickGold * mine.feverMult, minerGold: base.minerGold * mine.feverMult };
 }
 
 function publicMine() {
   const { clicksPerVein, xpPerClick, veins, minerBaseCost, minerGrowth, minerMax,
-          minerBaseRate, offlineCapSeconds } = mine;
+          minerBaseRate, offlineCapSeconds, feverSeconds, feverMult } = mine;
   return { clicksPerVein, xpPerClick, veins, minerBaseCost, minerGrowth, minerMax,
-           minerBaseRate, offlineCapSeconds };
+           minerBaseRate, offlineCapSeconds, feverSeconds, feverMult };
 }
 
 function logEvent(env, userId, type, payload, nowMs) {
@@ -83,6 +90,15 @@ async function loadPlayer(env, user, nowMs) {
   return { p, isNew };
 }
 
+function parseJsonArray(text) {
+  try {
+    const a = JSON.parse(text || '[]');
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+}
+
 function toState(p) {
   let queue = [];
   try {
@@ -94,6 +110,7 @@ function toState(p) {
     gold: p.gold, xp: p.xp, nuggets: p.nuggets,
     queue, hits: p.vein_hits,
     miners: p.miners, idleAt: p.idle_at,
+    talents: parseJsonArray(p.talents), feverUntil: p.fever_until, smelter: p.smelter_unlocked,
   };
 }
 
@@ -107,6 +124,9 @@ function view(p, s) {
     queue: s.queue,
     hits: s.hits,
     miners: s.miners,
+    talents: s.talents,
+    feverUntil: s.feverUntil,
+    smelterUnlocked: s.smelter,
   };
 }
 
@@ -117,6 +137,7 @@ async function save(env, p, s, tokens, tokensAt, nowMs) {
        level = ?, xp = ?, gold = ?, nuggets = ?,
        vein_queue = ?, vein_hits = ?,
        miners = ?, idle_at = ?,
+       talents = ?, fever_until = ?, smelter_unlocked = ?,
        click_tokens = ?, click_tokens_at = ?,
        last_sync_at = ?, version = version + 1
      WHERE telegram_id = ? AND version = ?`
@@ -124,6 +145,7 @@ async function save(env, p, s, tokens, tokensAt, nowMs) {
     .bind(levelInfo(s.xp).level, s.xp, s.gold, s.nuggets,
           JSON.stringify(s.queue), s.hits,
           s.miners, s.idleAt,
+          JSON.stringify(s.talents), s.feverUntil, s.smelter,
           tokens, tokensAt,
           Math.floor(nowMs / 1000), p.telegram_id, p.version)
     .run();
@@ -131,10 +153,15 @@ async function save(env, p, s, tokens, tokensAt, nowMs) {
 }
 
 // Начисляет золото шахтёров за время с прошлого обращения (не больше offlineCapSeconds).
-function settleIdle(s, mods, nowMs) {
+// Пока шла алмазная лихорадка, шахтёры приносили вдвое больше.
+function settleIdle(s, base, nowMs) {
   const raw = s.idleAt ? Math.max(0, (nowMs - s.idleAt) / 1000) : 0;
   const credited = Math.min(raw, mine.offlineCapSeconds);
-  const gold = s.miners * mods.minerGold * credited;
+  let feverSec = 0;
+  if (base.fever && s.idleAt) {
+    feverSec = Math.min(credited, Math.max(0, Math.min(nowMs, s.feverUntil) - s.idleAt) / 1000);
+  }
+  const gold = s.miners * base.minerGold * (credited + feverSec * (mine.feverMult - 1));
   s.gold += gold;
   s.idleAt = nowMs;
   return { seconds: raw, credited, gold, capped: raw > mine.offlineCapSeconds };
@@ -147,11 +174,12 @@ async function mutate(env, user, fn) {
     const nowMs = Date.now();
     const { p, isNew } = await loadPlayer(env, user, nowMs);
     const s = toState(p);
-    const mods = getMods(p);
+    const base = getMods(s.talents);
     refillQueue(s.queue, mine, rand);
-    const idle = settleIdle(s, mods, nowMs);
+    const idle = settleIdle(s, base, nowMs);
+    const mods = effectiveMods(base, s.feverUntil, nowMs);
 
-    const out = fn({ p, s, mods, nowMs }) || {};
+    const out = fn({ p, s, mods, base, nowMs }) || {};
     if (out.fail) return json({ error: out.fail.error }, out.fail.status);
     refillQueue(s.queue, mine, rand);
 
@@ -163,7 +191,7 @@ async function mutate(env, user, fn) {
     for (const [type, payload] of out.events || []) {
       await logEvent(env, user.id, type, payload, nowMs);
     }
-    return json({ ...(out.body || {}), isNew, player: view(p, s), mods, idle });
+    return json({ ...(out.body || {}), isNew, player: view(p, s), mods: getMods(s.talents), idle, serverTime: nowMs });
   }
   return json({ error: 'busy' }, 409);
 }
@@ -190,12 +218,16 @@ async function handleClick(request, env) {
   if (!Number.isFinite(n) || n < 1) return json({ error: 'bad_request' }, 400);
   n = Math.min(n, mine.maxClicksPerRequest);
 
-  return mutate(env, auth.user, ({ p, s, mods, nowMs }) => {
+  return mutate(env, auth.user, ({ p, s, mods, base, nowMs }) => {
     // Лимит скорости: «ведро» с пополнением maxClicksPerSecond в секунду.
     const elapsed = Math.max(0, nowMs - p.click_tokens_at) / 1000;
     const tokens = Math.min(mine.burstClicks, p.click_tokens + elapsed * mine.maxClicksPerSecond);
     const allowed = Math.min(n, Math.floor(tokens));
-    const gained = applyClicks(s, allowed, mine, mods, (range) => randInt(range[0], range[1]));
+    const gained = applyClicks(s, allowed, mine, mods, (range) => {
+      const n = randInt(range[0], range[1]);
+      return rand() < base.doubleNugget ? n * 2 : n;
+    });
+    if (gained.nuggets > 0 && base.fever) s.feverUntil = nowMs + mine.feverSeconds * 1000;
     return {
       tokens: tokens - allowed,
       body: { accepted: allowed, requested: n, gained },
@@ -230,12 +262,38 @@ async function handleHire(request, env) {
   });
 }
 
+// POST /api/talent  { id: "pick_1" }
+async function handleTalent(request, env) {
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  const node = NODE_BY_ID[body && body.id];
+  if (!node) return json({ error: 'bad_request' }, 400);
+
+  return mutate(env, auth.user, ({ s }) => {
+    const err = checkBuy(node, s.talents, levelInfo(s.xp).level, s.gold, s.nuggets);
+    if (err) return { fail: { error: err, status: 409 } };
+    if (node.cost.nuggets !== undefined) s.nuggets -= node.cost.nuggets;
+    else s.gold -= node.cost.gold;
+    s.talents.push(node.id);
+    if (node.effect.type === 'unlock') s.smelter = 1;
+    return { body: { bought: node.id }, events: [['talent_bought', { id: node.id }]] };
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/state' && request.method === 'GET') return handleState(request, env);
     if (url.pathname === '/api/click' && request.method === 'POST') return handleClick(request, env);
     if (url.pathname === '/api/hire' && request.method === 'POST') return handleHire(request, env);
+    if (url.pathname === '/api/talent' && request.method === 'POST') return handleTalent(request, env);
     return json({ error: 'not_found' }, 404);
   },
 };

@@ -66,6 +66,32 @@
     }
     .float.dia { color: var(--diamond); }
     @keyframes up { to { transform: translate(-50%, -120px); opacity: 0; } }
+
+    .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .view[hidden] { display: none; }
+    #fever { min-height: 20px; font-size: 14px; font-weight: 700; color: var(--diamond); text-align: center; }
+    #smelterNote { font-size: 13px; opacity: .85; text-align: center; min-height: 18px; }
+    .nav { display: flex; gap: 8px; margin-top: 8px; }
+    .tab {
+      flex: 1; padding: 11px; border: 0; border-radius: 12px; background: var(--card);
+      color: inherit; font-weight: 700; font-size: 15px; cursor: pointer; touch-action: manipulation;
+    }
+    .tab.on { background: var(--gold); color: #2b1f06; }
+    #treeList { flex: 1; min-height: 0; overflow-y: auto; margin-top: 10px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+    .bonuses { background: var(--card); border-radius: 12px; padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-line; }
+    .shead { display: flex; gap: 8px; align-items: baseline; margin: 14px 2px 6px; }
+    .shead b { font-size: 16px; }
+    .shead span { font-size: 12px; opacity: .7; }
+    .shead .cnt { margin-left: auto; }
+    .node { display: flex; gap: 10px; align-items: center; background: var(--card); border-radius: 12px; padding: 10px 12px; margin-bottom: 6px; }
+    .node.owned { opacity: .6; }
+    .node.locked { opacity: .5; }
+    .ninfo { flex: 1; min-width: 0; }
+    .ninfo b { display: block; font-size: 14px; }
+    .ninfo .eff { font-size: 13px; }
+    .ninfo .why { display: block; font-size: 12px; opacity: .75; }
+    .btn.small { flex: none; min-width: 96px; padding: 9px 10px; font-size: 13px; }
+    .btn.dia { background: var(--diamond); color: #04323d; }
     .modal {
       position: fixed; inset: 0; background: rgba(0,0,0,.55);
       display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -91,19 +117,30 @@
       <div class="chip"><small>Золото <span class="gps" id="gps"></span></small><b id="gold">0</b></div>
       <div class="chip"><small>Самородки</small><b id="nuggets">0</b></div>
     </div>
-    <div class="stage">
-      <div class="vname" id="vname"></div>
-      <button class="rock v0" id="rock" aria-label="Жила"></button>
-      <div class="pips" id="pips"></div>
-    </div>
-    <div class="panel">
-      <div class="head"><span id="minersTitle">Шахтёры</span><span id="minersInfo"></span></div>
-      <div class="row">
-        <button class="btn" id="hire1" disabled>Нанять</button>
-        <button class="btn" id="hireMax" disabled>Нанять ещё</button>
+    <div class="view" id="viewMine">
+      <div class="stage">
+        <div id="fever"></div>
+        <div class="vname" id="vname"></div>
+        <button class="rock v0" id="rock" aria-label="Жила"></button>
+        <div class="pips" id="pips"></div>
+        <div id="smelterNote"></div>
+      </div>
+      <div class="panel">
+        <div class="head"><span id="minersTitle">Шахтёры</span><span id="minersInfo"></span></div>
+        <div class="row">
+          <button class="btn" id="hire1" disabled>Нанять</button>
+          <button class="btn" id="hireMax" disabled>Нанять ещё</button>
+        </div>
       </div>
     </div>
+    <div class="view" id="viewTree" hidden>
+      <div id="treeList"></div>
+    </div>
     <div id="status">Загрузка...</div>
+    <div class="nav">
+      <button class="tab on" id="tabMine">Рудник</button>
+      <button class="tab" id="tabTree">Древо</button>
+    </div>
   </div>
 
   <div class="modal" id="modal" hidden>
@@ -116,6 +153,7 @@
 
   <script type="module">
     import { levelInfo, applyClicks, minerPrice, minersCost } from './core.js';
+    import { NODES, BRANCH_INFO, NODE_BY_ID, checkBuy } from './talents.js';
 
     const tg = window.Telegram && window.Telegram.WebApp;
     const $ = (id) => document.getElementById(id);
@@ -135,6 +173,10 @@
     let unsent = 0;      // клики, ещё не отправленные
     let inflight = 0;    // клики, отправленные и ждущие ответа
     let lastTap = 0;
+    let clockOffset = 0; // разница между часами сервера и телефона
+    let view = 'mine';
+    let treeBuilt = false;
+    const nodeEls = {};
 
     // Все запросы к серверу идут строго по очереди.
     let chain = Promise.resolve();
@@ -180,7 +222,19 @@
       mods = data.mods;
       if (data.mine) mine = data.mine;
       syncAt = performance.now();
+      if (data.serverTime) clockOffset = data.serverTime - Date.now();
       if (data.idle) maybeShowIdle(data.idle);
+    }
+
+    function feverLeft() {
+      if (!mods || !mods.fever || !S) return 0;
+      return Math.max(0, (S.feverUntil - (Date.now() + clockOffset)) / 1000);
+    }
+
+    // Бонусы с учётом алмазной лихорадки, если она сейчас идёт.
+    function effMods() {
+      const f = feverLeft() > 0 ? mine.feverMult : 1;
+      return { clickGold: mods.clickGold * f, minerGold: mods.minerGold * f, xpMult: mods.xpMult };
     }
 
     function maybeShowIdle(idle) {
@@ -198,10 +252,11 @@
     // и золото, которое шахтёры принесли с момента последней синхронизации.
     function display() {
       const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits, miners: S.miners };
+      const em = effMods();
       const pending = inflight + unsent;
-      if (pending) applyClicks(d, pending, mine, mods, () => 0);
+      if (pending) applyClicks(d, pending, mine, em, () => 0);
       const sec = Math.min(120, (performance.now() - syncAt) / 1000);
-      d.gold += S.miners * mods.minerGold * sec;
+      d.gold += S.miners * em.minerGold * sec;
       return d;
     }
 
@@ -222,7 +277,8 @@
       $('gold').textContent = fmt(d.gold);
       $('nuggets').textContent = d.nuggets;
 
-      const gps = d.miners * mods.minerGold;
+      const em = effMods();
+      const gps = d.miners * em.minerGold;
       $('gps').textContent = gps > 0 ? '+' + fmt(gps) + '/с' : '';
 
       const vein = mine.veins[d.queue[0]];
@@ -232,6 +288,10 @@
       }
       const pips = $('pips').children;
       for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < d.hits);
+
+      const left = feverLeft();
+      $('fever').textContent = left > 0 ? 'Алмазная лихорадка ×' + mine.feverMult + ' · ' + Math.ceil(left) + ' с' : '';
+      $('smelterNote').textContent = S.smelterUnlocked ? 'Плавильня открыта. Скоро её можно будет запустить.' : '';
 
       // панель шахтёров
       $('minersTitle').textContent = 'Шахтёры: ' + d.miners + ' / ' + mine.minerMax;
@@ -243,6 +303,116 @@
       const c = maxAffordable(d);
       $('hireMax').textContent = c >= 2 ? 'Нанять ×' + c + ' · ' + fmt(minersCost(mine, d.miners, c)) : 'Нанять несколько';
       $('hireMax').disabled = c < 2;
+
+      if (view === 'tree') updateTree(d);
+    }
+
+
+    function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+    function buildTree() {
+      const root = $('treeList');
+      const box = document.createElement('div');
+      box.className = 'bonuses';
+      box.id = 'bonuses';
+      root.appendChild(box);
+      for (const br of BRANCH_INFO) {
+        const head = document.createElement('div');
+        head.className = 'shead';
+        head.innerHTML = '<b></b><span></span><span class="cnt"></span>';
+        head.children[0].textContent = br.name;
+        head.children[1].textContent = br.desc;
+        root.appendChild(head);
+        nodeEls['cnt_' + br.id] = head.children[2];
+        for (const n of NODES.filter((x) => x.branch === br.id)) {
+          const card = document.createElement('div');
+          card.className = 'node';
+          card.innerHTML = '<div class="ninfo"><b></b><span class="eff"></span><span class="why"></span></div>' +
+                           '<button class="btn small"></button>';
+          card.querySelector('b').textContent = n.name;
+          card.querySelector('.eff').textContent = n.text;
+          const btn = card.querySelector('button');
+          btn.dataset.id = n.id;
+          if (n.cost.nuggets !== undefined) btn.classList.add('dia');
+          root.appendChild(card);
+          nodeEls[n.id] = { card, why: card.querySelector('.why'), btn };
+        }
+      }
+      root.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-id]');
+        if (btn && !btn.disabled) buyTalent(btn.dataset.id);
+      });
+      treeBuilt = true;
+    }
+
+    function priceLabel(n) {
+      return n.cost.nuggets !== undefined ? n.cost.nuggets + ' ◆' : fmt(n.cost.gold) + ' зол.';
+    }
+
+    function updateTree(d) {
+      if (!treeBuilt) return;
+      const level = levelInfo(d.xp).level;
+      const owned = S.talents;
+      const counts = {};
+      const total = {};
+      for (const n of NODES) {
+        total[n.branch] = (total[n.branch] || 0) + 1;
+        if (owned.includes(n.id)) counts[n.branch] = (counts[n.branch] || 0) + 1;
+        const el = nodeEls[n.id];
+        const err = checkBuy(n, owned, level, d.gold, d.nuggets);
+        let cls = 'node';
+        let why = '';
+        if (err === 'owned') cls += ' owned';
+        else if (err === 'requires' || err === 'level') cls += ' locked';
+        if (err === 'requires') {
+          const missing = n.req.filter((r) => !owned.includes(r));
+          why = n.id === 'final'
+            ? 'Нужны все остальные таланты (осталось ' + missing.length + ')'
+            : 'Сначала: ' + missing.slice(0, 2).map((r) => NODE_BY_ID[r].name).join(', ');
+        } else if (err === 'level') why = 'Нужен уровень ' + n.level;
+        else if (err === 'funds') why = n.cost.nuggets !== undefined ? 'Не хватает самородков' : 'Не хватает золота';
+        if (el.card.className !== cls) el.card.className = cls;
+        setText(el.why, why);
+        setText(el.btn, err === 'owned' ? 'Куплено' : priceLabel(n));
+        el.btn.disabled = err !== null;
+      }
+      for (const br of BRANCH_INFO) setText(nodeEls['cnt_' + br.id], (counts[br.id] || 0) + ' / ' + total[br.id]);
+
+      const em = mods;
+      setText($('bonuses'),
+        'Золото за клик (малая жила): ' + fmt(em.clickGold) + '\n' +
+        'Один шахтёр: ' + fmt(em.minerGold) + ' золота в секунду\n' +
+        'Опыт: ×' + String(Math.round(em.xpMult * 100) / 100).replace('.', ',') + '\n' +
+        'Шанс удвоить самородки: ' + Math.round(em.doubleNugget * 100) + '%');
+    }
+
+    async function buyTalent(id) {
+      await flush();
+      await enqueue(async () => {
+        try {
+          applyServer(await api('/api/talent', 'POST', { id }));
+          statusEl.textContent = id === 'final' ? 'Плавильня открыта!' : '';
+        } catch (err) {
+          const code = err.data && err.data.error;
+          statusEl.textContent =
+            code === 'requires' ? 'Сначала нужны предыдущие таланты' :
+            code === 'level' ? 'Не хватает уровня' :
+            code === 'funds' ? 'Не хватает ресурсов' :
+            code === 'owned' ? 'Уже куплено' : 'Не удалось купить';
+          await doSync();
+        }
+        render();
+      });
+    }
+
+    function showView(name) {
+      view = name;
+      $('viewMine').hidden = name !== 'mine';
+      $('viewTree').hidden = name !== 'tree';
+      $('tabMine').classList.toggle('on', name === 'mine');
+      $('tabTree').classList.toggle('on', name === 'tree');
+      if (name === 'tree' && !treeBuilt) buildTree();
+      render();
     }
 
     function floatText(x, y, text, dia) {
@@ -265,7 +435,7 @@
       const vein = mine.veins[d.queue[0]];
 
       unsent += 1;
-      if (vein.mult > 0) floatText(e.clientX, e.clientY - 30, '+' + fmt(mods.clickGold * vein.mult), false);
+      if (vein.mult > 0) floatText(e.clientX, e.clientY - 30, '+' + fmt(effMods().clickGold * vein.mult), false);
       else floatText(e.clientX, e.clientY - 30, '◆', true);
       if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
 
@@ -343,6 +513,8 @@
         if (c >= 2) hire(c);
       });
       $('modalOk').addEventListener('click', () => { $('modal').hidden = true; });
+      $('tabMine').addEventListener('click', () => showView('mine'));
+      $('tabTree').addEventListener('click', () => showView('tree'));
 
       setInterval(() => flush(false), 1000);
       setInterval(() => enqueue(doSync), 20000);
