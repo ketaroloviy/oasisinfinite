@@ -66,3 +66,15 @@ export function applyClicks(s, k, mine, mods, rollNuggets) {
   }
   return gained;
 }
+
+// Цена следующего шахтёра, если уже нанято owned.
+export function minerPrice(mine, owned) {
+  return Math.round(mine.minerBaseCost * Math.pow(mine.minerGrowth, owned));
+}
+
+// Суммарная цена найма count шахтёров подряд, если уже нанято owned.
+export function minersCost(mine, owned, count) {
+  let total = 0;
+  for (let i = 0; i < count; i++) total += minerPrice(mine, owned + i);
+  return total;
+}

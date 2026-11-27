@@ -18,7 +18,7 @@
     }
     .app {
       height: 100%; display: flex; flex-direction: column;
-      padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+      padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
       padding-top: calc(12px + env(safe-area-inset-top, 0px));
     }
     .top { display: flex; align-items: center; gap: 10px; }
@@ -30,7 +30,8 @@
     .chip { flex: 1; background: var(--card); border-radius: 14px; padding: 10px 12px; }
     .chip small { display: block; opacity: .7; font-size: 12px; }
     .chip b { font-size: 22px; }
-    .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
+    .chip .gps { font-size: 12px; opacity: .8; margin-left: 4px; }
+    .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
     .vname { font-size: 18px; font-weight: 600; min-height: 24px; }
     .rock {
       --s: 160px; width: var(--s); height: var(--s); border-radius: 46% 54% 50% 50% / 55% 48% 52% 45%;
@@ -39,16 +40,25 @@
       transition: transform .06s;
     }
     .rock:active { transform: scale(.93); }
-    .v0 { --s: 150px; background: radial-gradient(circle at 35% 30%, #b9a58f, #7d6a57); }
-    .v1 { --s: 165px; background: radial-gradient(circle at 35% 30%, #d2b98a, #8f7347); }
-    .v2 { --s: 180px; background: radial-gradient(circle at 35% 30%, #f0d36a, #a8801a); }
-    .v3 { --s: 195px; background: radial-gradient(circle at 35% 30%, #ffe27a, #c78b00); }
-    .v4 { --s: 175px; background: radial-gradient(circle at 35% 30%, #d9fbff, #25a9c9);
+    .v0 { --s: 140px; background: radial-gradient(circle at 35% 30%, #b9a58f, #7d6a57); }
+    .v1 { --s: 152px; background: radial-gradient(circle at 35% 30%, #d2b98a, #8f7347); }
+    .v2 { --s: 164px; background: radial-gradient(circle at 35% 30%, #f0d36a, #a8801a); }
+    .v3 { --s: 176px; background: radial-gradient(circle at 35% 30%, #ffe27a, #c78b00); }
+    .v4 { --s: 160px; background: radial-gradient(circle at 35% 30%, #d9fbff, #25a9c9);
           box-shadow: inset -10px -14px 24px rgba(0,0,0,.25), 0 0 34px rgba(67,209,238,.65); }
     .pips { display: flex; gap: 8px; }
     .pip { width: 16px; height: 16px; border-radius: 50%; background: var(--card); transition: background .1s; }
     .pip.on { background: var(--gold); }
-    #status { min-height: 18px; text-align: center; font-size: 13px; opacity: .75; }
+    .panel { background: var(--card); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .panel .head { display: flex; justify-content: space-between; font-size: 14px; }
+    .panel .head span:last-child { opacity: .75; }
+    .row { display: flex; gap: 8px; }
+    .btn {
+      flex: 1; padding: 12px 8px; border: 0; border-radius: 12px; font-weight: 700; font-size: 15px;
+      background: var(--gold); color: #2b1f06; cursor: pointer; touch-action: manipulation;
+    }
+    .btn:disabled { opacity: .4; cursor: default; }
+    #status { min-height: 18px; text-align: center; font-size: 13px; opacity: .8; margin-top: 8px; }
     .float {
       position: fixed; pointer-events: none; font-weight: 700; font-size: 22px;
       color: var(--gold); text-shadow: 0 1px 2px rgba(0,0,0,.35);
@@ -56,6 +66,18 @@
     }
     .float.dia { color: var(--diamond); }
     @keyframes up { to { transform: translate(-50%, -120px); opacity: 0; } }
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .modal[hidden] { display: none; }
+    .card {
+      background: var(--tg-theme-bg-color, #f5e6c8); color: var(--tg-theme-text-color, #3b2f1e);
+      border-radius: 18px; padding: 20px; max-width: 340px; width: 100%; text-align: center;
+    }
+    .card h3 { margin: 0 0 10px; }
+    .card p { margin: 0 0 16px; line-height: 1.4; }
+    .card .note { font-size: 13px; opacity: .75; }
   </style>
 </head>
 <body>
@@ -66,7 +88,7 @@
       <div class="xp" id="xptext">0 / 25</div>
     </div>
     <div class="res">
-      <div class="chip"><small>Золото</small><b id="gold">0</b></div>
+      <div class="chip"><small>Золото <span class="gps" id="gps"></span></small><b id="gold">0</b></div>
       <div class="chip"><small>Самородки</small><b id="nuggets">0</b></div>
     </div>
     <div class="stage">
@@ -74,11 +96,26 @@
       <button class="rock v0" id="rock" aria-label="Жила"></button>
       <div class="pips" id="pips"></div>
     </div>
+    <div class="panel">
+      <div class="head"><span id="minersTitle">Шахтёры</span><span id="minersInfo"></span></div>
+      <div class="row">
+        <button class="btn" id="hire1" disabled>Нанять</button>
+        <button class="btn" id="hireMax" disabled>Нанять ещё</button>
+      </div>
+    </div>
     <div id="status">Загрузка...</div>
   </div>
 
+  <div class="modal" id="modal" hidden>
+    <div class="card">
+      <h3>Пока тебя не было</h3>
+      <p id="modalText"></p>
+      <button class="btn" id="modalOk" style="width:100%">Отлично</button>
+    </div>
+  </div>
+
   <script type="module">
-    import { levelInfo, applyClicks } from './core.js';
+    import { levelInfo, applyClicks, minerPrice, minersCost } from './core.js';
 
     const tg = window.Telegram && window.Telegram.WebApp;
     const $ = (id) => document.getElementById(id);
@@ -94,26 +131,89 @@
     let S = null;        // последнее подтверждённое сервером состояние
     let mine = null;     // настройки рудника с сервера
     let mods = null;     // бонусы игрока с сервера
+    let syncAt = 0;      // когда получили S (для плавного роста золота от шахтёров)
     let unsent = 0;      // клики, ещё не отправленные
     let inflight = 0;    // клики, отправленные и ждущие ответа
     let lastTap = 0;
 
-    const headers = () => ({ Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' });
+    // Все запросы к серверу идут строго по очереди.
+    let chain = Promise.resolve();
+    function enqueue(fn) {
+      const p = chain.then(fn);
+      chain = p.catch(() => {});
+      return p;
+    }
+
+    async function api(path, method, body, keepalive) {
+      const res = await fetch(path, {
+        method,
+        headers: { Authorization: 'tma ' + tg.initData, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        keepalive: !!keepalive,
+      });
+      let data = null;
+      try { data = await res.json(); } catch (e) { /* ответ не JSON */ }
+      if (!res.ok) {
+        const err = new Error('HTTP ' + res.status + (data && data.reason ? ' ' + data.reason : ''));
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    }
 
     function fmt(n) {
       if (n >= 1000) return Math.floor(n).toLocaleString('ru-RU');
       return (Math.round(n * 10) / 10).toString().replace('.', ',');
     }
 
-    // Что показываем: подтверждённое состояние плюс клики, которые сервер ещё не подтвердил.
+    function fmtDuration(sec) {
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      if (h > 0) return h + ' ч ' + m + ' мин';
+      if (m > 0) return m + ' мин';
+      return Math.max(1, Math.floor(sec)) + ' с';
+    }
+
+    function applyServer(data) {
+      S = data.player;
+      mods = data.mods;
+      if (data.mine) mine = data.mine;
+      syncAt = performance.now();
+      if (data.idle) maybeShowIdle(data.idle);
+    }
+
+    function maybeShowIdle(idle) {
+      if (idle.seconds < 60 || idle.gold <= 0 || !$('modal').hidden) return;
+      let text = 'Шахтёры работали ' + fmtDuration(idle.credited) + ' и принесли ' + fmt(idle.gold) + ' золота.';
+      if (idle.capped) {
+        text += '<br><span class="note">Тебя не было дольше ' + fmtDuration(mine.offlineCapSeconds) +
+                ', больше шахтёры не накапливают.</span>';
+      }
+      $('modalText').innerHTML = text;
+      $('modal').hidden = false;
+    }
+
+    // Что показываем: подтверждённое состояние, клики, ещё не подтверждённые сервером,
+    // и золото, которое шахтёры принесли с момента последней синхронизации.
     function display() {
-      const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits };
+      const d = { gold: S.gold, xp: S.xp, nuggets: S.nuggets, queue: S.queue.slice(), hits: S.hits, miners: S.miners };
       const pending = inflight + unsent;
       if (pending) applyClicks(d, pending, mine, mods, () => 0);
+      const sec = Math.min(120, (performance.now() - syncAt) / 1000);
+      d.gold += S.miners * mods.minerGold * sec;
       return d;
     }
 
+    function maxAffordable(d) {
+      const room = mine.minerMax - d.miners;
+      let c = 0;
+      while (c < room && minersCost(mine, d.miners, c + 1) <= d.gold) c++;
+      return c;
+    }
+
     function render() {
+      if (!S) return;
       const d = display();
       const li = levelInfo(d.xp);
       $('level').textContent = 'Ур. ' + li.level;
@@ -122,6 +222,9 @@
       $('gold').textContent = fmt(d.gold);
       $('nuggets').textContent = d.nuggets;
 
+      const gps = d.miners * mods.minerGold;
+      $('gps').textContent = gps > 0 ? '+' + fmt(gps) + '/с' : '';
+
       const vein = mine.veins[d.queue[0]];
       if (vein) {
         $('rock').className = 'rock v' + vein.id;
@@ -129,6 +232,17 @@
       }
       const pips = $('pips').children;
       for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < d.hits);
+
+      // панель шахтёров
+      $('minersTitle').textContent = 'Шахтёры: ' + d.miners + ' / ' + mine.minerMax;
+      $('minersInfo').textContent = gps > 0 ? fmt(gps) + ' золота в секунду' : 'ещё никого нет';
+      const full = d.miners >= mine.minerMax;
+      const price = minerPrice(mine, d.miners);
+      $('hire1').textContent = full ? 'Максимум' : 'Нанять · ' + fmt(price);
+      $('hire1').disabled = full || d.gold < price;
+      const c = maxAffordable(d);
+      $('hireMax').textContent = c >= 2 ? 'Нанять ×' + c + ' · ' + fmt(minersCost(mine, d.miners, c)) : 'Нанять несколько';
+      $('hireMax').disabled = c < 2;
     }
 
     function floatText(x, y, text, dia) {
@@ -159,22 +273,14 @@
       if (unsent >= 20) flush();
     }
 
-    async function flush(keepalive) {
-      if (inflight || !unsent || !S) return;
+    async function doFlush(keepalive) {
+      if (!unsent || !S) return;
       inflight = unsent;
       unsent = 0;
       try {
-        const res = await fetch('/api/click', {
-          method: 'POST',
-          headers: headers(),
-          body: JSON.stringify({ clicks: inflight }),
-          keepalive: !!keepalive,
-        });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        S = data.player;
-        mods = data.mods;
+        const data = await api('/api/click', 'POST', { clicks: inflight }, keepalive);
         inflight = 0;
+        applyServer(data);
         statusEl.textContent = '';
       } catch (err) {
         unsent += inflight;
@@ -183,38 +289,68 @@
       }
       render();
     }
+    const flush = (keepalive) => enqueue(() => doFlush(keepalive));
+
+    // Редкая синхронизация, чтобы подтянуть доход шахтёров и поправить расхождения.
+    async function doSync() {
+      try {
+        applyServer(await api('/api/state', 'GET'));
+        statusEl.textContent = '';
+      } catch (err) {
+        statusEl.textContent = 'Нет связи, пробую снова...';
+      }
+      render();
+    }
+
+    async function hire(count) {
+      await flush();
+      await enqueue(async () => {
+        try {
+          applyServer(await api('/api/hire', 'POST', { count }));
+          statusEl.textContent = '';
+        } catch (err) {
+          const code = err.data && err.data.error;
+          statusEl.textContent =
+            code === 'not_enough_gold' ? 'Не хватает золота' :
+            code === 'limit' ? 'Больше нанять нельзя' : 'Не удалось нанять';
+          await doSync();
+        }
+        render();
+      });
+    }
 
     async function init() {
       try {
-        const res = await fetch('/api/state', { headers: headers() });
-        if (!res.ok) {
-          let extra = '';
-          try {
-            const j = await res.json();
-            extra = ' ' + JSON.stringify({ reason: j.reason, hasToken: j.hasToken, tokenLooksOk: j.tokenLooksOk });
-          } catch (e) { /* ответ не JSON */ }
-          throw new Error('HTTP ' + res.status + extra);
-        }
-        const data = await res.json();
-        S = data.player;
-        mine = data.mine;
-        mods = data.mods;
-
-        const pips = $('pips');
-        for (let i = 0; i < mine.clicksPerVein; i++) {
-          const p = document.createElement('div');
-          p.className = 'pip';
-          pips.appendChild(p);
-        }
-        statusEl.textContent = '';
-        render();
-        $('rock').addEventListener('pointerdown', onTap);
-        $('rock').addEventListener('contextmenu', (e) => e.preventDefault());
-        setInterval(() => flush(false), 1000);
-        document.addEventListener('visibilitychange', () => { if (document.hidden) flush(true); });
+        applyServer(await api('/api/state', 'GET'));
       } catch (err) {
         statusEl.textContent = 'Не удалось связаться с сервером: ' + (err.message || err);
+        return;
       }
+      const pips = $('pips');
+      for (let i = 0; i < mine.clicksPerVein; i++) {
+        const p = document.createElement('div');
+        p.className = 'pip';
+        pips.appendChild(p);
+      }
+      statusEl.textContent = '';
+      render();
+
+      $('rock').addEventListener('pointerdown', onTap);
+      $('rock').addEventListener('contextmenu', (e) => e.preventDefault());
+      $('hire1').addEventListener('click', () => hire(1));
+      $('hireMax').addEventListener('click', () => {
+        const c = maxAffordable(display());
+        if (c >= 2) hire(c);
+      });
+      $('modalOk').addEventListener('click', () => { $('modal').hidden = true; });
+
+      setInterval(() => flush(false), 1000);
+      setInterval(() => enqueue(doSync), 20000);
+      setInterval(render, 250);
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) flush(true);
+        else enqueue(doSync);
+      });
     }
     init();
   </script>
