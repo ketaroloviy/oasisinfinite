@@ -95,3 +95,10 @@ export function workersCost(baseCost, growth, owned, count) {
   for (let i = 0; i < count; i++) total += workerPrice(baseCost, growth, owned + i);
   return total;
 }
+
+// Сколько всего опыта нужно, чтобы достичь уровня level (начало этого уровня).
+export function xpForLevel(level) {
+  let total = 0;
+  for (let l = 1; l < level; l++) total += xpToNext(l);
+  return total;
+}

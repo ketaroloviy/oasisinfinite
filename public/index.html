@@ -112,6 +112,18 @@
     .lockedBox { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; line-height: 1.5; opacity: .8; }
     .lockedBox[hidden] { display: none; }
     .chip[hidden] { display: none; }
+    .tab[hidden] { display: none; }
+    .tab { font-size: 13px; padding: 11px 4px; }
+    input { -webkit-user-select: text; user-select: text; }
+    .adminBox { flex: 1; min-height: 0; overflow-y: auto; margin-top: 10px; padding-bottom: 6px; }
+    #admTarget { width: 100%; padding: 11px 12px; border: 0; border-radius: 12px; background: var(--card); color: inherit; font-size: 15px; }
+    #admMsg { min-height: 20px; margin: 8px 2px 0; font-size: 13px; opacity: .85; }
+    .admRow { background: var(--card); border-radius: 12px; padding: 10px 12px; margin-top: 8px; }
+    .admHead { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .admHead span { opacity: .8; }
+    .admCtl { display: flex; gap: 6px; }
+    .admCtl input { flex: 1; min-width: 0; padding: 9px 10px; border: 0; border-radius: 10px; background: rgba(127,127,127,.2); color: inherit; font-size: 15px; }
+    .admCtl .btn { flex: none; min-width: 0; padding: 9px 10px; font-size: 13px; }
     .modal {
       position: fixed; inset: 0; background: rgba(0,0,0,.55);
       display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -177,6 +189,13 @@
         </div>
       </div>
     </div>
+    <div class="view" id="viewAdmin" hidden>
+      <div class="adminBox">
+        <select id="admTarget"><option value="self">Я</option></select>
+        <div id="admMsg"></div>
+        <div id="admFields"></div>
+      </div>
+    </div>
     <div class="view" id="viewTree" hidden>
       <div id="treeList"></div>
     </div>
@@ -185,6 +204,7 @@
       <button class="tab on" id="tabMine">Рудник</button>
       <button class="tab" id="tabSmelter">Плавильня</button>
       <button class="tab" id="tabTree">Древо</button>
+      <button class="tab" id="tabAdmin" hidden>Админ</button>
     </div>
   </div>
 
@@ -199,6 +219,7 @@
   <script type="module">
     import { levelInfo, applyClicks, minerPrice, minersCost, workerPrice, workersCost } from './core.js';
     import { NODES, BRANCH_INFO, NODE_BY_ID, checkBuy } from './talents.js';
+    import { CURRENCIES } from './currencies.js';
 
     const tg = window.Telegram && window.Telegram.WebApp;
     const $ = (id) => document.getElementById(id);
@@ -220,6 +241,11 @@
     let lastTap = 0;
     let smelterCfg = null; // настройки плавильни с сервера
     let smBusy = false;
+    let isAdmin = false;   // сервер сообщает, админ ли ты
+    let admTarget = null;  // null = я, иначе id другого игрока
+    let admView = null;    // состояние выбранного другого игрока
+    let admBuilt = false;
+    let admBusy = false;
     let clockOffset = 0; // разница между часами сервера и телефона
     let view = 'mine';
     let treeBuilt = false;
@@ -269,6 +295,7 @@
       mods = data.mods;
       if (data.mine) mine = data.mine;
       if (data.smelter) smelterCfg = data.smelter;
+      if (data.isAdmin !== undefined) isAdmin = !!data.isAdmin;
       syncAt = performance.now();
       if (data.serverTime) clockOffset = data.serverTime - Date.now();
       if (data.idle) maybeShowIdle(data.idle);
@@ -364,8 +391,10 @@
         const aps = d.smiths * mods.smithAksum;
         $('aps').textContent = aps > 0 ? '+' + fmt(aps) + '/с' : '';
       }
+      $('tabAdmin').hidden = !isAdmin;
       if (view === 'tree') updateTree(d);
       else if (view === 'smelter') updateSmelter(d);
+      else if (view === 'admin') updateAdmin();
     }
 
 
@@ -470,11 +499,18 @@
       view = name;
       $('viewMine').hidden = name !== 'mine';
       $('viewSmelter').hidden = name !== 'smelter';
+      $('viewAdmin').hidden = name !== 'admin';
       $('viewTree').hidden = name !== 'tree';
       $('tabMine').classList.toggle('on', name === 'mine');
       $('tabSmelter').classList.toggle('on', name === 'smelter');
       $('tabTree').classList.toggle('on', name === 'tree');
+      $('tabAdmin').classList.toggle('on', name === 'admin');
       if (name === 'tree' && !treeBuilt) buildTree();
+      if (name === 'admin' && isAdmin) {
+        if (!admBuilt) buildAdmin();
+        loadAdminPlayers();
+        if (admTarget !== null) admApply([]);
+      }
       render();
     }
 
@@ -594,6 +630,95 @@
       });
     }
 
+
+    // ---------- админ-панель (доступна только по ADMIN_ID на сервере) ----------
+    const fmtExact = (n) => Number(n.toFixed(2)).toLocaleString('ru-RU');
+    const admMsg = (t) => { $('admMsg').textContent = t; };
+
+    function admSrc() { return admTarget === null ? S : admView; }
+
+    function updateAdmin() {
+      const src = admSrc();
+      for (const c of CURRENCIES) {
+        const el = document.querySelector('.admRow[data-id="' + c.id + '"] .admVal');
+        if (!el) continue;
+        let text = '—';
+        if (src) text = c.isLevel ? String(levelInfo(src.xp).level) : fmtExact(src[c.key]);
+        setText(el, text);
+      }
+    }
+
+    function buildAdmin() {
+      const box = $('admFields');
+      for (const c of CURRENCIES) {
+        const row = document.createElement('div');
+        row.className = 'admRow';
+        row.dataset.id = c.id;
+        row.innerHTML = '<div class="admHead"><b></b><span class="admVal"></span></div>' +
+          '<div class="admCtl"><input type="text" inputmode="decimal" placeholder="число">' +
+          '<button class="btn" data-mode="set">Задать</button><button class="btn" data-mode="add">Добавить</button></div>';
+        row.querySelector('b').textContent = c.name;
+        box.appendChild(row);
+      }
+      box.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-mode]');
+        if (!btn) return;
+        const row = btn.closest('.admRow');
+        const input = row.querySelector('input');
+        const v = parseFloat(input.value.replace(',', '.').replace(/\s/g, ''));
+        if (!Number.isFinite(v)) { admMsg('Введи число'); return; }
+        admApply([{ field: row.dataset.id, mode: btn.dataset.mode, value: v }]);
+        input.value = '';
+      });
+      $('admTarget').addEventListener('change', () => {
+        const v = $('admTarget').value;
+        admTarget = v === 'self' ? null : Number(v);
+        admView = null;
+        admMsg('');
+        if (admTarget !== null) admApply([]);
+        render();
+      });
+      admBuilt = true;
+    }
+
+    async function loadAdminPlayers() {
+      try {
+        const data = await api('/api/admin/players', 'GET');
+        const sel = $('admTarget');
+        const keep = sel.value;
+        sel.innerHTML = '<option value="self">Я</option>';
+        for (const p of data.players) {
+          if (p.isMe) continue;
+          const o = document.createElement('option');
+          o.value = String(p.id);
+          o.textContent = p.name + ' · ур. ' + p.level + ' · ' + p.id;
+          sel.appendChild(o);
+        }
+        if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+      } catch (err) {
+        admMsg('Не удалось загрузить игроков');
+      }
+    }
+
+    async function admApply(changes) {
+      if (admBusy || !S) return;
+      admBusy = true;
+      await flush();
+      await enqueue(async () => {
+        try {
+          const data = await api('/api/admin/adjust', 'POST', { target: admTarget === null ? undefined : admTarget, changes });
+          if (admTarget === null) applyServer(data);
+          else admView = data.player;
+          admMsg(changes.length ? 'Готово' : '');
+        } catch (err) {
+          const code = err.data && err.data.error;
+          admMsg(code === 'forbidden' ? 'Нет доступа' : code === 'not_found' ? 'Игрок не найден' : 'Ошибка: ' + err.message);
+        }
+      });
+      admBusy = false;
+      render();
+    }
+
     function floatText(x, y, text, dia) {
       const el = document.createElement('div');
       el.className = 'float' + (dia ? ' dia' : '');
@@ -695,6 +820,7 @@
       $('tabMine').addEventListener('click', () => showView('mine'));
       $('tabSmelter').addEventListener('click', () => showView('smelter'));
       $('tabTree').addEventListener('click', () => showView('tree'));
+      $('tabAdmin').addEventListener('click', () => showView('admin'));
       $('btnCast').addEventListener('click', () => smeltAction('cast'));
       $('btnCool').addEventListener('click', () => smeltAction('cool'));
       $('btnPolish').addEventListener('click', () => smeltAction('polish'));

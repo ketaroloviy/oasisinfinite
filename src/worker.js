@@ -1,5 +1,6 @@
 import { checkInitData } from './auth.js';
-import { levelInfo, applyClicks, refillQueue, minersCost, workersCost, rollWeighted } from '../public/core.js';
+import { levelInfo, xpForLevel, applyClicks, refillQueue, minersCost, workersCost, rollWeighted } from '../public/core.js';
+import { CURRENCIES } from '../public/currencies.js';
 import { computeMods, NODE_BY_ID, checkBuy } from '../public/talents.js';
 import balance from '../config/balance.json';
 
@@ -64,6 +65,11 @@ function publicMine() {
            minerBaseRate, offlineCapSeconds, feverSeconds, feverMult };
 }
 
+// Админ определяется на сервере по ADMIN_ID (секрет в настройках Cloudflare).
+function isAdmin(user, env) {
+  return !!env.ADMIN_ID && String(user.id) === String(env.ADMIN_ID).trim();
+}
+
 function publicSmelter() {
   const { xpPerCoin, smithBaseCost, smithGrowth, smithMax, smithBaseRate, coins } = smelter;
   return { xpPerCoin, smithBaseCost, smithGrowth, smithMax, smithBaseRate, coins };
@@ -77,12 +83,13 @@ function logEvent(env, userId, type, payload, nowMs) {
     .run();
 }
 
-async function loadPlayer(env, user, nowMs) {
+async function loadPlayer(env, user, nowMs, create = true) {
   const find = () =>
     env.DB.prepare('SELECT * FROM players WHERE telegram_id = ?').bind(user.id).first();
 
   let p = await find();
   let isNew = false;
+  if (!p && !create) return { p: null, isNew: false };
   if (!p) {
     const s = balance.start;
     const now = Math.floor(nowMs / 1000);
@@ -193,10 +200,11 @@ function settleIdle(s, base, nowMs) {
 
 // Общий каркас для всех действий: читает игрока, начисляет доход шахтёров,
 // выполняет действие fn, сохраняет и отвечает. При гонке запросов повторяет.
-async function mutate(env, user, fn) {
+async function mutate(env, user, fn, opts = {}) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const nowMs = Date.now();
-    const { p, isNew } = await loadPlayer(env, user, nowMs);
+    const { p, isNew } = await loadPlayer(env, user, nowMs, opts.create !== false);
+    if (!p) return json({ error: 'not_found' }, 404);
     const s = toState(p);
     const base = getMods(s.talents);
     refillQueue(s.queue, mine, rand);
@@ -224,7 +232,7 @@ async function mutate(env, user, fn) {
 async function handleState(request, env) {
   const auth = await authUser(request, env);
   if (!auth.user) return unauthorized(env, auth.reason);
-  return mutate(env, auth.user, () => ({ body: { mine: publicMine(), smelter: publicSmelter() } }));
+  return mutate(env, auth.user, () => ({ body: { mine: publicMine(), smelter: publicSmelter(), isAdmin: isAdmin(auth.user, env) } }));
 }
 
 // POST /api/click  { clicks: N }
@@ -401,6 +409,69 @@ async function handleSmith(request, env) {
   });
 }
 
+// GET /api/admin/players: список игроков для выбора (только админ).
+async function handleAdminPlayers(request, env) {
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+  if (!isAdmin(auth.user, env)) return json({ error: 'forbidden' }, 403);
+
+  const res = await env.DB.prepare(
+    'SELECT telegram_id, first_name, username, level, gold FROM players ORDER BY last_sync_at DESC LIMIT 30'
+  ).all();
+  const players = (res.results || []).map((r) => ({
+    id: r.telegram_id,
+    name: r.first_name || r.username || String(r.telegram_id),
+    level: r.level,
+    isMe: r.telegram_id === auth.user.id,
+  }));
+  return json({ players });
+}
+
+// POST /api/admin/adjust  { target?: id, changes: [{ field, mode: "set"|"add", value }] }
+async function handleAdminAdjust(request, env) {
+  const auth = await authUser(request, env);
+  if (!auth.user) return unauthorized(env, auth.reason);
+  if (!isAdmin(auth.user, env)) return json({ error: 'forbidden' }, 403);
+
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  const targetId = body && body.target != null ? Number(body.target) : auth.user.id;
+  if (!Number.isSafeInteger(targetId)) return json({ error: 'bad_request' }, 400);
+
+  const changes = body && Array.isArray(body.changes) ? body.changes : null;
+  if (!changes || changes.length > 10) return json({ error: 'bad_request' }, 400);
+  for (const ch of changes) {
+    const def = CURRENCIES.find((c) => c.id === ch.field);
+    const value = Number(ch.value);
+    if (!def || !['set', 'add'].includes(ch.mode) || !Number.isFinite(value) || Math.abs(value) > 1e15) {
+      return json({ error: 'bad_request' }, 400);
+    }
+  }
+
+  return mutate(env, { id: targetId }, ({ s }) => {
+    const applied = [];
+    for (const ch of changes) {
+      const def = CURRENCIES.find((c) => c.id === ch.field);
+      const value = Number(ch.value);
+      const from = def.isLevel ? levelInfo(s.xp).level : s[def.key];
+      let to = ch.mode === 'set' ? value : from + value;
+      if (def.int) to = Math.round(to);
+      to = Math.min(def.max, Math.max(def.min, to));
+      if (def.isLevel) s.xp = xpForLevel(to);
+      else s[def.key] = to;
+      applied.push({ field: def.id, mode: ch.mode, value, from, to });
+    }
+    return {
+      body: { target: targetId, applied },
+      events: applied.length ? [['admin_adjust', { admin: auth.user.id, changes: applied }]] : [],
+    };
+  }, { create: false });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -410,6 +481,8 @@ export default {
     if (url.pathname === '/api/talent' && request.method === 'POST') return handleTalent(request, env);
     if (url.pathname === '/api/smelter' && request.method === 'POST') return handleSmelter(request, env);
     if (url.pathname === '/api/smith' && request.method === 'POST') return handleSmith(request, env);
+    if (url.pathname === '/api/admin/players' && request.method === 'GET') return handleAdminPlayers(request, env);
+    if (url.pathname === '/api/admin/adjust' && request.method === 'POST') return handleAdminAdjust(request, env);
     return json({ error: 'not_found' }, 404);
   },
 };
